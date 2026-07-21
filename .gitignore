@@ -1,0 +1,5 @@
+.env
+tailscale-state
+*.safetensors
+*.gguf
+image/model.json

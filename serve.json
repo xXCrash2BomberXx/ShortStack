@@ -1,0 +1,26 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "11434": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "${TS_CERT_DOMAIN}:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://localhost:8080"
+        }
+      }
+    },
+    "${TS_CERT_DOMAIN}:11434": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://localhost:11434"
+        }
+      }
+    }
+  }
+}

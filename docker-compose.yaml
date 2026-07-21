@@ -1,0 +1,106 @@
+services:
+  tailscale:
+    image: docker.io/tailscale/tailscale:latest
+    container_name: tailscale
+    hostname: open-webui
+    restart: always
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SERVE_CONFIG=/config/serve.json
+      - TS_EXTRA_ARGS=--advertise-tags=tag:server
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+      - ./serve.json:/config/serve.json:ro
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "11434:11434" # http://localhost:11434 (ollama)
+      - "3000:8080"  # http://localhost:3000 (open-webui)
+
+  ollama:
+    image: docker.io/ollama/ollama:latest
+    container_name: ollama
+    restart: always
+    network_mode: service:tailscale
+    devices:
+      - nvidia.com/gpu=all
+    security_opt:
+      - "label=disable"
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_CONTEXT_LENGTH=${GLOBAL_CONTEXT_LENGTH}
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KV_CACHE_TYPE=q4_0
+    volumes:
+      - ollama_data:/root/.ollama
+      - ./models:/root/models:Z
+
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: always
+    network_mode: service:tailscale
+    environment:
+      - PORT=8080
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - ENABLE_IMAGE_GENERATION=True
+      - IMAGE_GENERATION_ENGINE=comfyui
+      - COMFYUI_BASE_URL=http://comfyui:8188
+      - TEXT_GENERATION_WINDOW_CONTEXT_LEN=${GLOBAL_CONTEXT_LENGTH}
+      - ENABLE_RAG_WEB_SEARCH=True
+      - RAG_WEB_SEARCH_ENGINE=searxng
+      - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
+      - RAG_WEB_SEARCH_RESULT_COUNT=5
+      - RAG_WEB_SEARCH_CONCURRENT_REQUESTS=10
+      - VECTOR_DB=qdrant
+      - QDRANT_URI=http://qdrant:6333
+      - RAG_EMBEDDING_ENGINE=ollama
+      - RAG_EMBEDDING_MODEL=nomic-embed-text
+      - RAG_OLLAMA_BASE_URL=http://localhost:11434
+    volumes:
+      - open-webui_data:/app/backend/data
+
+  tor:
+    image: docker.io/dockurr/tor:latest
+    container_name: tor
+    restart: always
+
+  qdrant:
+    image: docker.io/qdrant/qdrant:latest
+    container_name: qdrant
+    restart: always
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+
+  searxng:
+    image: docker.io/searxng/searxng:latest
+    container_name: searxng
+    restart: always
+    volumes:
+      - ./settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080/
+      - UWSGI_WORKERS=2
+      - UWSGI_THREADS=2
+      - UWSGI_HTTP=:8080
+
+  comfyui:
+    image: docker.io/yanwk/comfyui-boot:cu128-slim
+    container_name: comfyui
+    restart: always
+    devices:
+      - nvidia.com/gpu=all
+    volumes:
+      - ./image:/root/ComfyUI/models/checkpoints:ro
+    command: ["--listen", "0.0.0.0", "--port", "8188"]
+
+volumes:
+  tailscale_state: {}
+  ollama_data: {}
+  open-webui_data: {}
+  qdrant_data: {}
