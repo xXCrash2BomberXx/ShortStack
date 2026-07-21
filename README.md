@@ -3,6 +3,7 @@
 I wanted a lightweight and containerized LLM stack with drag and drop models... so here's this.
 Ask an AI to debug it for you, it's fewer tokens than you'd spend not hosting yourself after this.
 `ollama` is exposed over `port 11434` for agentic work through your `tailscale`/`localhost` with `open-webui` exposed at root (`port 443`).
+I get around 40 tk/s on Gemma 4 (4.6B) and 20 tk/s on Qwen 3.5 (4.2B) with an Nvidia RTX 2060 GPU.
 
 ## Setup
 
