@@ -2,6 +2,7 @@
 
 I wanted a lightweight and containerized LLM stack with drag and drop models... so here's this.
 Ask an AI to debug it for you, it's fewer tokens than you'd spend not hosting yourself after this.
+`ollama` is exposed over `port 11434` for agentic work through your `tailscale`/`localhost` with `open-webui` exposed at root (`port 443`).
 
 ## Setup
 
