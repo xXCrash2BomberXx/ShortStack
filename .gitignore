@@ -1,4 +1,5 @@
 .env
+settings.yml
 tailscale-state
 *.safetensors
 *.gguf
