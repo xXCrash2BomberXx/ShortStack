@@ -13,7 +13,7 @@ Ask an AI to debug it for you, it's fewer tokens than you'd spend not hosting yo
 4. Run `docker-compose up`
 5. Run `./reload-models.sh`
    - You might need to `sudo chmod +x ./reload-models.sh` beforehand
-6. Download desired `.safetensors` [image model(s)](https://huggingface.co/models?pipeline_tag=text-to-image&library=safetensors&sort=trending) to `./image`
+6. Download desired `.safetensors` [image model(s)](https://huggingface.co/models?pipeline_tag=text-to-image&library=safetensors&sort=trending) to `./image/`
    - This can be easily changed to other formats and model types 
 7. Consult the [sacred texts](https://docs.openwebui.com/features/chat-conversations/image-generation-and-editing/comfyui#create-image-image-generation)
 8. 
