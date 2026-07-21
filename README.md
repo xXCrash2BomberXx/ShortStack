@@ -1,4 +1,4 @@
-# SmallStack
+# ShortStack
 
 I wanted a lightweight and containerized LLM stack with drag and drop models... so here's this.
 Ask an AI to debug it for you, it's fewer tokens than you'd spend not hosting yourself after this.
