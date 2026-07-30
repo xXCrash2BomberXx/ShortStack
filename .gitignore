@@ -4,3 +4,6 @@ tailscale-state
 *.safetensors
 *.gguf
 image/model.json
+containers-storage
+dataset
+start.sh
