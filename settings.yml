@@ -1,0 +1,342 @@
+use_default_settings: true
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
+
+engines:
+  # General web
+  - name: google
+    engine: google
+    shortcut: go
+    disabled: false
+  - name: google tor
+    engine: google
+    shortcut: got
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+  - name: duckduckgo tor
+    engine: duckduckgo
+    shortcut: ddt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false
+  - name: bing tor
+    engine: bing
+    shortcut: bgt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: brave
+    engine: brave
+    shortcut: brv
+    disabled: false
+  - name: brave tor
+    engine: brave
+    shortcut: brt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+
+  # Independent / alternative indexes
+  - name: apk mirror
+    engine: apkmirror
+    shortcut: apk
+    disabled: false
+  - name: apk mirror tor
+    engine: apkmirror
+    shortcut: apt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: fdroid
+    engine: fdroid
+    shortcut: fd
+    disabled: false
+  - name: fdroid tor
+    engine: fdroid
+    shortcut: fdt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: annas archive
+    engine: annas_archive
+    shortcut: aa
+    disabled: false
+  - name: annas archive tor
+    engine: annas_archive
+    shortcut: aat
+    base_url: https://annas-archive.org
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: piratebay
+    engine: piratebay
+    shortcut: tpb
+    disabled: false
+  - name: piratebay tor
+    engine: piratebay
+    shortcut: tpt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: nyaa
+    engine: nyaa
+    shortcut: ny
+    disabled: false
+  - name: nyaa tor
+    engine: nyaa
+    shortcut: nyt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+
+  # Reference / structured knowledge
+  - name: youtube
+    engine: youtube_noapi
+    shortcut: yt
+    disabled: false
+  - name: youtube tor
+    engine: youtube_noapi
+    shortcut: ytt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: google scholar
+    engine: google_scholar
+    shortcut: gs
+    disabled: false
+  - name: google scholar tor
+    engine: google_scholar
+    shortcut: gst
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: reddit
+    engine: reddit
+    shortcut: re
+    disabled: false
+  - name: reddit tor
+    engine: reddit
+    shortcut: ret
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: imdb
+    engine: imdb
+    shortcut: imd
+    disabled: false
+  - name: imdb tor
+    engine: imdb
+    shortcut: imt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: rottentomatoes
+    engine: rottentomatoes
+    shortcut: rt
+    disabled: false
+  - name: rottentomatoes tor
+    engine: rottentomatoes
+    shortcut: rtt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: steam
+    engine: steam
+    shortcut: st
+    disabled: false
+  - name: steam tor
+    engine: steam
+    shortcut: stt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+  - name: wikipedia tor
+    engine: wikipedia
+    shortcut: wpt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+
+  # Technical / dev-focused
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+  - name: github tor
+    engine: github
+    shortcut: ght
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: github code
+    engine: github_code
+    shortcut: ghc
+    disabled: false
+    ghc_auth:
+      type: "none"
+  - name: github code tor
+    engine: github_code
+    shortcut: gct
+    disabled: false
+    ghc_auth:
+      type: "none"
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: gitlab
+    engine: gitlab
+    shortcut: gl
+    disabled: false
+    base_url: https://gitlab.com
+  - name: gitlab tor
+    engine: gitlab
+    shortcut: glt
+    disabled: false
+    base_url: https://gitlab.com
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: stackoverflow
+    engine: stackexchange
+    shortcut: so
+    api_site: 'stackoverflow'
+    disabled: false
+  - name: stackoverflow tor
+    engine: stackexchange
+    shortcut: sot
+    api_site: 'stackoverflow'
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: huggingface
+    engine: huggingface
+    shortcut: hf
+    disabled: false
+  - name: huggingface tor
+    engine: huggingface
+    shortcut: hft
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+
+  # World data
+  - name: duckduckgo weather
+    engine: duckduckgo_weather
+    shortcut: ddw
+    disabled: false
+  - name: duckduckgo weather tor
+    engine: duckduckgo_weather
+    shortcut: dwt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: apple maps
+    engine: apple_maps
+    shortcut: am
+    disabled: false
+  - name: apple maps tor
+    engine: apple_maps
+    shortcut: amt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: openstreetmap
+    engine: openstreetmap
+    shortcut: osm
+    disabled: false
+  - name: openstreetmap tor
+    engine: openstreetmap
+    shortcut: omt
+    disabled: false
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+
+  # Dark web
+  - name: ahmia
+    engine: ahmia
+    shortcut: ah
+    disabled: false
+    categories: onions
+    timeout: 60.0
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: torch
+    engine: xpath
+    shortcut: trc
+    disabled: false
+    categories: onions
+    search_url: 'http://torch266367252.onion/search?q={query}'
+    url_xpath: '//div[@class="result"]/a/@href'
+    title_xpath: '//div[@class="result"]/a/text()'
+    content_xpath: '//div[@class="result"]/p[@class="snippet"]/text()'
+    timeout: 60.0
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
