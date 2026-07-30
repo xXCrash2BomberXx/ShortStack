@@ -49,7 +49,6 @@ services:
       - ENABLE_IMAGE_GENERATION=True
       - IMAGE_GENERATION_ENGINE=comfyui
       - COMFYUI_BASE_URL=http://comfyui:8188
-      - TEXT_GENERATION_WINDOW_CONTEXT_LEN=${GLOBAL_CONTEXT_LENGTH}
       - ENABLE_WEB_SEARCH=True
       - WEB_SEARCH_ENGINE=searxng
       - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
