@@ -32,10 +32,12 @@ class Pipe:
             description=(
                 "If the thinking model starts emitting plain content (not a tool "
                 "call) and no tool_calls have appeared yet in that message, close "
-                "the stream immediately instead of letting it finish. Saves "
-                "compute on a response that gets discarded anyway. Disable if "
-                "your thinking model sometimes emits commentary content BEFORE "
-                "a tool call in the same turn — aborting would cut that call off."
+                "the connection immediately instead of letting it finish generating. "
+                "The content is discarded either way (it's never shown to the user "
+                "or passed to the final model) — this just saves compute on output "
+                "that's going to be thrown away. Disable if your thinking model "
+                "sometimes emits commentary content BEFORE a tool call in the same "
+                "turn — aborting would cut that call off."
             ),
         )
 
@@ -117,7 +119,7 @@ class Pipe:
         model,
         working_messages,
         tools=None,
-        wrap_content_as_discardable: bool = False,
+        suppress_content: bool = False,
         abort_on_bare_content: bool = False,
     ):
         """Streams a model's output, forwarding tokens live as they arrive,
@@ -125,13 +127,16 @@ class Pipe:
         tool_calls) on self._last_message once done.
 
         Wraps streamed reasoning tokens in <think>...</think> so the UI
-        renders them the same way the old buffered version did.
+        renders them the same way the old buffered version did. Thinking
+        is ALWAYS streamed to the user, regardless of suppress_content —
+        the two are tracked independently.
 
-        wrap_content_as_discardable: if True, plain `content` tokens (as
-        opposed to `thinking`) get wrapped in their own collapsible
-        <details> block instead of streaming inline. Use this for the
-        thinking model, whose bare content is never read by the final
-        model and would otherwise look like part of the real answer.
+        suppress_content: if True, plain `content` tokens (as opposed to
+        `thinking`) are accumulated internally (so abort_on_bare_content
+        and downstream logic still work) but never streamed to the user
+        and never shown in any form — not even in a collapsible box. Use
+        this for the thinking model: its prose answer isn't the real
+        response and shouldn't be surfaced at all.
 
         abort_on_bare_content: if True, and content starts arriving with
         no tool_calls seen yet in this message, close the connection
@@ -145,7 +150,6 @@ class Pipe:
         acc_content = ""
         acc_tool_calls = None
         thinking_open = False
-        content_wrapper_open = False
         aborted = False
 
         gen = self._stream_ollama(client, model, working_messages, tools=tools)
@@ -173,15 +177,9 @@ class Pipe:
                     if thinking_open:
                         yield self._chunk("\n</think>\n\n")
                         thinking_open = False
-                    if wrap_content_as_discardable and not content_wrapper_open:
-                        yield self._chunk(
-                            '<details type="discarded_draft" done="false">\n'
-                            "<summary>Thinking model's draft answer "
-                            "(discarded — not seen by final model)</summary>\n\n"
-                        )
-                        content_wrapper_open = True
                     acc_content += p_content
-                    yield self._chunk(p_content)
+                    if not suppress_content:
+                        yield self._chunk(p_content)
 
                     if abort_on_bare_content and acc_tool_calls is None:
                         aborted = True
@@ -197,16 +195,13 @@ class Pipe:
 
         if thinking_open:
             yield self._chunk("\n</think>\n\n")
-        if content_wrapper_open:
-            if aborted:
-                yield self._chunk("\n\n*(cut short — generation aborted)*")
-            yield self._chunk("\n\n</details>\n\n")
 
         self._last_message = {
             "role": "assistant",
             "content": acc_content,
             "thinking": acc_thinking,
             "tool_calls": acc_tool_calls,
+            "aborted": aborted,
         }
 
     async def pipe(
@@ -225,8 +220,9 @@ class Pipe:
                 tool_funcs[tool["spec"]["name"]] = tool["callable"]
 
         # This is the actual shared context. The thinking model's tool-call
-        # turns and tool results get appended here as real message turns,
-        # not summarized — the final model reads this list directly.
+        # turns, tool results, and reasoning get appended here as real
+        # message turns, not summarized — the final model reads this list
+        # directly. Its raw prose "answer" (content) is never appended.
         working_messages = list(self._clean(messages))
         total_tool_calls = 0
 
@@ -244,20 +240,27 @@ class Pipe:
                     self.valves.THINKING_MODEL,
                     working_messages,
                     tools=tool_specs if tool_specs else None,
-                    wrap_content_as_discardable=True,
+                    suppress_content=True,
                     abort_on_bare_content=self.valves.ABORT_THINKING_ON_CONTENT,
                 ):
                     yield piece
 
                 msg = self._last_message
                 content = msg.get("content", "") or ""
+                thinking = msg.get("thinking", "") or ""
                 calls = msg.get("tool_calls")
 
                 if not calls:
-                    # Nothing left to call — whatever content it produced here
-                    # is discarded (it was already streamed to the user as
-                    # "thinking-model output", but working_messages doesn't
-                    # get it appended); the final model writes the actual reply.
+                    # Thinking model settled on a direct answer instead of
+                    # calling more tools. Its content is fully discarded —
+                    # never shown to the user, never passed to the final
+                    # model — but its reasoning for this round is folded
+                    # into the shared context so the final model still
+                    # inherits the complete chain of thought.
+                    if thinking:
+                        working_messages.append(
+                            {"role": "assistant", "content": "", "thinking": thinking}
+                        )
                     break
 
                 await self._emit_status(
@@ -266,7 +269,12 @@ class Pipe:
                 )
 
                 working_messages.append(
-                    {"role": "assistant", "content": content, "tool_calls": calls}
+                    {
+                        "role": "assistant",
+                        "content": content,
+                        "thinking": thinking,
+                        "tool_calls": calls,
+                    }
                 )
 
                 for i, call in enumerate(calls, start=1):
@@ -317,8 +325,9 @@ class Pipe:
 
             # Context transplant: the final model just continues this exact
             # conversation. No injected instructions, no summary of what
-            # happened — it sees the same tool_calls/tool turns and picks up
-            # from there. Streamed live, same as the thinking model.
+            # happened — it sees the same tool_calls/tool/thinking turns and
+            # picks up from there. Streamed live, same as the thinking model.
+            # suppress_content is left False here: this is the real answer.
             await self._emit_status(
                 __event_emitter__, f"{self.valves.FINAL_MODEL} continuing..."
             )
