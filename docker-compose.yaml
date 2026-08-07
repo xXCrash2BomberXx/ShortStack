@@ -82,8 +82,6 @@ services:
     environment:
       - SEARXNG_BASE_URL=http://searxng:8080/
       - SEARXNG_SECRET=searxng
-      - UWSGI_WORKERS=2
-      - UWSGI_THREADS=2
       - UWSGI_HTTP=:8080
 
   comfyui:
