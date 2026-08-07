@@ -22,6 +22,22 @@ class Pipe:
             default="gemma-4-E4B-it-qat-q4-0-heretic-Q4-0-PURE:latest",
             description="Model that continues from the thinking model's context and produces the response.",
         )
+        THINKING_SYSTEM_PROMPT: str = Field(
+            default="",
+            description=(
+                "System prompt for the thinking/tool-calling model. Leave blank "
+                "to use whatever system message (if any) is already in the "
+                "conversation, unmodified."
+            ),
+        )
+        FINAL_SYSTEM_PROMPT: str = Field(
+            default="",
+            description=(
+                "System prompt for the final response model. Leave blank to "
+                "use whatever system message (if any) is already in the "
+                "conversation, unmodified."
+            ),
+        )
         NUM_CTX: int = Field(default=131072)
         MAX_ROUNDS: int = Field(
             default=5,
@@ -61,6 +77,21 @@ class Pipe:
             if role and content:
                 cleaned.append({"role": role, "content": content})
         return cleaned
+
+    def _with_system_prompt(self, working_messages, system_prompt):
+        """Returns a copy of working_messages with `system_prompt` as the
+        leading system message, replacing any existing system message.
+
+        Does NOT mutate working_messages — each model call gets its own
+        view of the system message without polluting the shared context
+        that the other model reads. If system_prompt is empty/blank, the
+        original list is returned unchanged (whatever system message, if
+        any, came in from the caller is left as-is).
+        """
+        if not system_prompt:
+            return working_messages
+        filtered = [m for m in working_messages if m.get("role") != "system"]
+        return [{"role": "system", "content": system_prompt}] + filtered
 
     def _chunk(self, content: str, finish_reason: Optional[str] = None) -> dict:
         delta = {"content": content} if content else {}
@@ -235,10 +266,14 @@ class Pipe:
                     f"{self.valves.THINKING_MODEL} thinking (round {round_num}/{self.valves.MAX_ROUNDS})...",
                 )
 
+                thinking_messages = self._with_system_prompt(
+                    working_messages, self.valves.THINKING_SYSTEM_PROMPT
+                )
+
                 async for piece in self._stream_and_forward(
                     client,
                     self.valves.THINKING_MODEL,
-                    working_messages,
+                    thinking_messages,
                     tools=tool_specs if tool_specs else None,
                     suppress_content=True,
                     abort_on_bare_content=self.valves.ABORT_THINKING_ON_CONTENT,
@@ -326,13 +361,20 @@ class Pipe:
             # Context transplant: the final model just continues this exact
             # conversation. No injected instructions, no summary of what
             # happened — it sees the same tool_calls/tool/thinking turns and
-            # picks up from there. Streamed live, same as the thinking model.
-            # suppress_content is left False here: this is the real answer.
+            # picks up from there (aside from its own system prompt, if
+            # configured, swapped in below). Streamed live, same as the
+            # thinking model. suppress_content is left False here: this is
+            # the real answer.
             await self._emit_status(
                 __event_emitter__, f"{self.valves.FINAL_MODEL} continuing..."
             )
+
+            final_messages = self._with_system_prompt(
+                working_messages, self.valves.FINAL_SYSTEM_PROMPT
+            )
+
             async for piece in self._stream_and_forward(
-                client, self.valves.FINAL_MODEL, working_messages
+                client, self.valves.FINAL_MODEL, final_messages
             ):
                 yield piece
 
