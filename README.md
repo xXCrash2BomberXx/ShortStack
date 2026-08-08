@@ -17,5 +17,5 @@ Ask an AI to debug it for you, it's fewer tokens than you'd spend not hosting yo
 6. Download desired `.safetensors` [image model(s)](https://huggingface.co/models?pipeline_tag=text-to-image&library=safetensors&sort=trending) to `./image/`
    - This can be easily changed to other formats and model types
    - You'll need to configure the model in the Open WebUI Admin Panel for images
-8. 
+8. ?
 9. Profit.
