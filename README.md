@@ -18,4 +18,4 @@ Ask an AI to debug it for you, it's fewer tokens than you'd spend not hosting yo
    - This can be easily changed to other formats and model types
    - You'll need to configure the model in the Open WebUI Admin Panel for images
 8. ?
-9. Profit.
+9. Profit
