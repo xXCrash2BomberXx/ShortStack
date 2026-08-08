@@ -4,11 +4,32 @@ description: One model thinks and calls tools across multiple rounds; a second m
 version: 0.1.0
 """
 
+import os
 import html
 import json
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional, Callable, Awaitable, AsyncGenerator
+
+
+def _get_model_options(__user__=None) -> list:
+    """Target for THINKING_MODEL/FINAL_MODEL's 'select' input, if your Open
+    WebUI version supports json_schema_extra select inputs on Pipe valves
+    (if it doesn't, these fields just fall back to a plain text box -- type
+    the model name manually, same as before). Runs synchronously and
+    briefly blocks; only fires when the valves config page is opened, not
+    per chat request. Reads OLLAMA_BASE_URL from an env var (mirrored there
+    by pipe() on every call) since a classmethod has no access to an
+    instance's self.valves.
+    """
+    base_url = os.environ.get("AGENT_OLLAMA_BASE_URL", "http://localhost:11434")
+    try:
+        r = httpx.get(f"{base_url}/api/tags", timeout=5)
+        r.raise_for_status()
+        names = [m["name"] for m in r.json().get("models", [])]
+        return [{"label": n, "value": n} for n in names]
+    except Exception:
+        return []
 
 
 class Pipe:
@@ -17,10 +38,16 @@ class Pipe:
         THINKING_MODEL: str = Field(
             default="Qwen3-5-4B-heretic-i1-IQ4-XS:latest",
             description="Model that reasons and calls tools.",
+            json_schema_extra={
+                "input": {"type": "select", "options": "get_model_options"}
+            },
         )
         FINAL_MODEL: str = Field(
             default="gemma-4-E4B-it-qat-q4-0-heretic-Q4-0-PURE:latest",
             description="Model that continues from the thinking model's context and produces the response.",
+            json_schema_extra={
+                "input": {"type": "select", "options": "get_model_options"}
+            },
         )
         THINKING_SYSTEM_PROMPT: str = Field(
             default="",
@@ -56,6 +83,10 @@ class Pipe:
                 "turn — aborting would cut that call off."
             ),
         )
+
+        @classmethod
+        def get_model_options(cls, __user__=None):
+            return _get_model_options(__user__)
 
     def __init__(self):
         self.valves = self.Valves()
@@ -242,6 +273,8 @@ class Pipe:
         __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> AsyncGenerator[dict, None]:
         messages = body.get("messages", [])
+
+        os.environ["AGENT_OLLAMA_BASE_URL"] = self.valves.OLLAMA_BASE_URL
 
         tool_specs = []
         tool_funcs = {}
