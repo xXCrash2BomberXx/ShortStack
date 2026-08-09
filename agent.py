@@ -7,6 +7,7 @@ version: 0.1.0
 import os
 import html
 import json
+import asyncio
 import httpx
 from pydantic import BaseModel, Field
 from typing import Optional, Callable, Awaitable, AsyncGenerator
@@ -83,6 +84,18 @@ class Pipe:
                 "turn — aborting would cut that call off."
             ),
         )
+        PARALLEL_TOOL_CALLS: bool = Field(
+            default=True,
+            description=(
+                "If a round contains multiple tool calls, run them concurrently "
+                "with asyncio.gather instead of one at a time. Emitted tool "
+                "blocks and appended tool-result messages still appear in the "
+                "same order the model requested them, regardless of which "
+                "finishes first. Disable if your tools aren't safe to run "
+                "concurrently (e.g. they share mutable state or hit a "
+                "rate-limited API that can't take concurrent requests)."
+            ),
+        )
 
         @classmethod
         def get_model_options(cls, __user__=None):
@@ -150,6 +163,28 @@ class Pipe:
             await __event_emitter__(
                 {"type": "status", "data": {"description": description, "done": done}}
             )
+
+    async def _run_tool_call(self, call, tool_funcs, call_index: int):
+        """Runs a single tool call and returns (call_id, fname, fargs, result).
+
+        Exceptions are caught and turned into a "Tool error: ..." string
+        result, same as the previous sequential behavior, so a single
+        failing call doesn't blow up the whole gather().
+        """
+        fname = call["function"]["name"]
+        fargs = call["function"].get("arguments", {})
+        call_id = call.get("id") or f"call_{fname}_{call_index}"
+
+        if fname in tool_funcs:
+            try:
+                func = tool_funcs[fname]
+                result = await func(**fargs) if _is_async(func) else func(**fargs)
+            except Exception as e:
+                result = f"Tool error: {e}"
+        else:
+            result = f"Tool '{fname}' not available"
+
+        return call_id, fname, fargs, result
 
     async def _stream_ollama(self, client, model, messages, tools=None):
         """Yields raw NDJSON chunk dicts from Ollama's streaming /api/chat."""
@@ -345,29 +380,39 @@ class Pipe:
                     }
                 )
 
-                for i, call in enumerate(calls, start=1):
-                    total_tool_calls += 1
-                    fname = call["function"]["name"]
-                    fargs = call["function"].get("arguments", {})
-                    call_id = call.get("id") or f"call_{fname}_{total_tool_calls}"
+                # Run every tool call requested in this round. When
+                # PARALLEL_TOOL_CALLS is on and there's more than one call,
+                # they're launched concurrently via asyncio.gather. Either
+                # way, results come back in a list aligned with `calls`, so
+                # the emitted tool blocks and appended tool-result messages
+                # below stay in the model's original request order — the
+                # transcript the thinking/final models see is identical to
+                # what a sequential run would have produced.
+                call_indices = [total_tool_calls + i for i in range(1, len(calls) + 1)]
+                total_tool_calls += len(calls)
 
+                if self.valves.PARALLEL_TOOL_CALLS and len(calls) > 1:
                     await self._emit_status(
                         __event_emitter__,
-                        f"Running tool {i}/{len(calls)} (round {round_num}): {fname}...",
+                        f"Running {len(calls)} tool call(s) in parallel (round {round_num})...",
                     )
+                    results = await asyncio.gather(
+                        *(
+                            self._run_tool_call(call, tool_funcs, idx)
+                            for call, idx in zip(calls, call_indices)
+                        )
+                    )
+                else:
+                    results = []
+                    for i, (call, idx) in enumerate(zip(calls, call_indices), start=1):
+                        fname = call["function"]["name"]
+                        await self._emit_status(
+                            __event_emitter__,
+                            f"Running tool {i}/{len(calls)} (round {round_num}): {fname}...",
+                        )
+                        results.append(await self._run_tool_call(call, tool_funcs, idx))
 
-                    if fname in tool_funcs:
-                        try:
-                            result = (
-                                await tool_funcs[fname](**fargs)
-                                if _is_async(tool_funcs[fname])
-                                else tool_funcs[fname](**fargs)
-                            )
-                        except Exception as e:
-                            result = f"Tool error: {e}"
-                    else:
-                        result = f"Tool '{fname}' not available"
-
+                for call_id, fname, fargs, result in results:
                     yield self._chunk(
                         self._tool_call_block(call_id, fname, fargs, result)
                     )
