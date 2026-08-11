@@ -96,6 +96,17 @@ class Pipe:
                 "rate-limited API that can't take concurrent requests)."
             ),
         )
+        REPORT_FULL_TURN_STATS: bool = Field(
+            default=True,
+            description=(
+                "If True, the generation stats shown to the client (tokens/sec, "
+                "durations, etc.) are summed across every model call in the turn "
+                "-- every thinking round plus the final model -- so they reflect "
+                "the true total compute/time spent. If False, only the final "
+                "model's own stats are reported, i.e. just the numbers for the "
+                "text actually shown as the answer."
+            ),
+        )
 
         @classmethod
         def get_model_options(cls, __user__=None):
@@ -137,9 +148,17 @@ class Pipe:
         filtered = [m for m in working_messages if m.get("role") != "system"]
         return [{"role": "system", "content": system_prompt}] + filtered
 
-    def _chunk(self, content: str, finish_reason: Optional[str] = None) -> dict:
+    def _chunk(
+        self,
+        content: str = "",
+        finish_reason: Optional[str] = None,
+        usage: Optional[dict] = None,
+    ) -> dict:
         delta = {"content": content} if content else {}
-        return {"choices": [{"delta": delta, "finish_reason": finish_reason}]}
+        payload = {"choices": [{"delta": delta, "finish_reason": finish_reason}]}
+        if usage:
+            payload["usage"] = usage
+        return payload
 
     def _tool_call_block(self, call_id: str, name: str, arguments: dict, result) -> str:
         args_attr = html.escape(json.dumps(arguments, ensure_ascii=False))
@@ -186,6 +205,108 @@ class Pipe:
 
         return call_id, fname, fargs, result
 
+    # Stats that are genuinely cumulative across multiple Ollama calls:
+    # eval_count/eval_duration are tokens generated and time spent
+    # generating on THAT call, so summing them across rounds gives a true
+    # "total tokens generated / total time generating this turn". Same for
+    # total_duration and load_duration (real wall-clock time spent, model
+    # load cost if the model wasn't already resident).
+    _SUM_FIELDS = {"total_duration", "load_duration", "eval_count", "eval_duration"}
+
+    # Stats that are NOT cumulative: prompt_eval_count/prompt_eval_duration
+    # describe the size/time of the *entire prompt* sent on that call. Since
+    # working_messages grows every round, each round's prompt re-includes
+    # everything from prior rounds -- summing these across rounds would
+    # double- (or triple-, quadruple-...) count the same early messages.
+    # The max across calls approximates the true "largest single context
+    # ingested this turn" instead.
+    _MAX_FIELDS = {"prompt_eval_count", "prompt_eval_duration"}
+
+    def _merge_usage(self, into: dict, new: dict):
+        """Merges Ollama's /api/chat done-stats from `new` into `into`.
+
+        Fields in _SUM_FIELDS are summed (they represent genuinely
+        additional work/time on each call). Fields in _MAX_FIELDS take the
+        max instead of summing, since they describe the size of the whole
+        prompt on that call rather than incremental work -- summing them
+        would badly overstate input token counts once more than one round
+        has happened. Any other numeric field not in either set is left
+        alone (unrecognized fields aren't meaningful to combine either
+        way, so they're dropped rather than silently mis-aggregated).
+        """
+        if not new:
+            return
+        for k, v in new.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool):
+                continue
+            if k in self._SUM_FIELDS:
+                into[k] = into.get(k, 0) + v
+            elif k in self._MAX_FIELDS:
+                into[k] = max(into.get(k, 0), v)
+
+    def _finalize_usage(self, usage: dict) -> dict:
+        """Expands the raw accumulated Ollama done-stats into the full
+        display shape Open WebUI's own native Ollama integration produces
+        (see convert_response_ollama_to_openai in
+        backend/open_webui/utils/response.py). That function is what
+        computes response_token/s, prompt_token/s, approximate_total, and
+        the OpenAI-style prompt_tokens/completion_tokens/total_tokens
+        aliases for a raw Ollama call -- but it only runs for native Ollama
+        model requests, not for pipe-supplied usage, so without this a
+        pipe's stats popup would be missing those fields entirely (only
+        the raw total_duration/prompt_eval_count/eval_count/... fields
+        would show, as seen in testing).
+
+        Formulas are copied as-is from Open WebUI's implementation:
+        tokens/sec is eval_count divided by eval_duration converted from
+        nanoseconds to seconds (written as `/ (dur / 10_000_000) * 100`,
+        which is algebraically the same thing), and approximate_total
+        floors total_duration to whole seconds and formats it "HhMmSs".
+        """
+        eval_count = usage.get("eval_count", 0) or 0
+        eval_duration = usage.get("eval_duration", 0) or 0
+        prompt_eval_count = usage.get("prompt_eval_count", 0) or 0
+        prompt_eval_duration = usage.get("prompt_eval_duration", 0) or 0
+        total_duration = usage.get("total_duration", 0) or 0
+
+        response_tok_s = (
+            round((eval_count / (eval_duration / 10_000_000)) * 100, 2)
+            if eval_duration > 0
+            else "N/A"
+        )
+        prompt_tok_s = (
+            round((prompt_eval_count / (prompt_eval_duration / 10_000_000)) * 100, 2)
+            if prompt_eval_duration > 0
+            else "N/A"
+        )
+        total_s = total_duration // 1_000_000_000
+        approximate_total = (
+            f"{total_s // 3600}h{(total_s % 3600) // 60}m{total_s % 60}s"
+        )
+
+        return {
+            "response_token/s": response_tok_s,
+            "prompt_token/s": prompt_tok_s,
+            "total_duration": total_duration,
+            "load_duration": usage.get("load_duration", 0) or 0,
+            "prompt_eval_count": prompt_eval_count,
+            "prompt_eval_duration": prompt_eval_duration,
+            "eval_count": eval_count,
+            "eval_duration": eval_duration,
+            "approximate_total": approximate_total,
+            # OpenAI-style aliases (Chat Completions naming), same fields
+            # a native Ollama call's usage block carries alongside the
+            # raw ones above.
+            "prompt_tokens": prompt_eval_count,
+            "completion_tokens": eval_count,
+            "total_tokens": prompt_eval_count + eval_count,
+            "completion_tokens_details": {
+                "reasoning_tokens": 0,
+                "accepted_prediction_tokens": 0,
+                "rejected_prediction_tokens": 0,
+            },
+        }
+
     async def _stream_ollama(self, client, model, messages, tools=None):
         """Yields raw NDJSON chunk dicts from Ollama's streaming /api/chat."""
         payload = {
@@ -221,7 +342,7 @@ class Pipe:
     ):
         """Streams a model's output, forwarding tokens live as they arrive,
         and stashes the fully-accumulated message (content, thinking,
-        tool_calls) on self._last_message once done.
+        tool_calls, stats) on self._last_message once done.
 
         Wraps streamed reasoning tokens in <think>...</think> so the UI
         renders them the same way the old buffered version did. Thinking
@@ -242,12 +363,20 @@ class Pipe:
         compute on output that's going to be discarded. Only safe when
         the model doesn't interleave commentary content before a tool
         call within the same turn.
+
+        Ollama's final NDJSON line for a call (the one with "done": true)
+        carries generation stats -- total_duration, load_duration,
+        prompt_eval_count, prompt_eval_duration, eval_count, eval_duration,
+        etc. Those are captured here (everything on that line except
+        "message") and returned via self._last_message["stats"] so the
+        caller can forward them to the client as a standard "usage" block.
         """
         acc_thinking = ""
         acc_content = ""
         acc_tool_calls = None
         thinking_open = False
         aborted = False
+        stats = {}
 
         gen = self._stream_ollama(client, model, working_messages, tools=tools)
         try:
@@ -283,6 +412,7 @@ class Pipe:
                         break
 
                 if raw.get("done"):
+                    stats = {k: v for k, v in raw.items() if k != "message"}
                     break
         finally:
             # Explicitly close the underlying generator so the httpx stream
@@ -299,6 +429,7 @@ class Pipe:
             "thinking": acc_thinking,
             "tool_calls": acc_tool_calls,
             "aborted": aborted,
+            "stats": stats,
         }
 
     async def pipe(
@@ -324,6 +455,11 @@ class Pipe:
         # directly. Its raw prose "answer" (content) is never appended.
         working_messages = list(self._clean(messages))
         total_tool_calls = 0
+
+        # Accumulates generation stats (tokens/sec, durations, etc.) across
+        # every model call in the turn, so they can be reported to the
+        # client the same way a standard single-model response would be.
+        usage: dict = {}
 
         async with httpx.AsyncClient(timeout=300) as client:
             round_num = 0
@@ -352,6 +488,9 @@ class Pipe:
                 content = msg.get("content", "") or ""
                 thinking = msg.get("thinking", "") or ""
                 calls = msg.get("tool_calls")
+
+                if self.valves.REPORT_FULL_TURN_STATS:
+                    self._merge_usage(usage, msg.get("stats", {}))
 
                 if not calls:
                     # Thinking model settled on a direct answer instead of
@@ -456,8 +595,17 @@ class Pipe:
             ):
                 yield piece
 
+            # The final model's own stats are always included, regardless
+            # of REPORT_FULL_TURN_STATS -- that flag only controls whether
+            # the thinking rounds' stats are folded in as well.
+            self._merge_usage(usage, self._last_message.get("stats", {}))
+
         await self._emit_status(__event_emitter__, "Done", done=True)
-        yield self._chunk("", finish_reason="stop")
+        yield self._chunk(
+            "",
+            finish_reason="stop",
+            usage=self._finalize_usage(usage) if usage else None,
+        )
 
 
 def _is_async(func):
