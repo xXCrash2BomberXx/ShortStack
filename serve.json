@@ -3,6 +3,9 @@
     "443": {
       "HTTPS": true
     },
+    "8888": {
+      "HTTPS": true
+    },
     "11434": {
       "HTTPS": true
     }
@@ -12,6 +15,13 @@
       "Handlers": {
         "/": {
           "Proxy": "http://localhost:8080"
+        }
+      }
+    },
+    "${TS_CERT_DOMAIN}:8888": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://localhost:8888"
         }
       }
     },

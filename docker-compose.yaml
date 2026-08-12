@@ -19,6 +19,7 @@ services:
     ports:
       - "11434:11434" # http://localhost:11434 (ollama)
       - "3000:8080"  # http://localhost:3000 (open-webui)
+      - "8888:8888" # http://localhost:8888 (searxng)
 
   ollama:
     image: docker.io/ollama/ollama:latest
@@ -50,7 +51,7 @@ services:
       - COMFYUI_BASE_URL=http://comfyui:8188
       - ENABLE_WEB_SEARCH=True
       - WEB_SEARCH_ENGINE=searxng
-      - SEARXNG_QUERY_URL=http://searxng:8080/search?q=<query>&format=json
+      - SEARXNG_QUERY_URL=http://localhost:8888/search?q=<query>&format=json
       - VECTOR_DB=qdrant
       - QDRANT_URI=http://qdrant:6333
       - RAG_EMBEDDING_ENGINE=ollama
@@ -77,12 +78,14 @@ services:
     image: docker.io/searxng/searxng:latest
     container_name: searxng
     restart: always
+    network_mode: service:tailscale
     volumes:
       - ./settings.yml:/etc/searxng/settings.yml:ro
     environment:
-      - SEARXNG_BASE_URL=http://searxng:8080/
+      - SEARXNG_BASE_URL=http://localhost:8888/
       - SEARXNG_SECRET=searxng
-      - UWSGI_HTTP=:8080
+      - SEARXNG_PORT=8888
+      - SEARXNG_BIND_ADDRESS=0.0.0.0
 
   comfyui:
     image: docker.io/yanwk/comfyui-boot:cu128-slim
