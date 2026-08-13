@@ -37,7 +37,7 @@ class Pipe:
     class Valves(BaseModel):
         OLLAMA_BASE_URL: str = Field(default="http://localhost:11434")
         THINKING_MODEL: str = Field(
-            default="Qwen3-5-4B-heretic-i1-IQ4-XS:latest",
+            default="Qwen3-5-9B-heretic-i1-IQ4-XS:latest",
             description="Model that reasons and calls tools.",
             json_schema_extra={
                 "input": {"type": "select", "options": "get_model_options"}
@@ -66,7 +66,14 @@ class Pipe:
                 "conversation, unmodified."
             ),
         )
-        NUM_CTX: int = Field(default=131072)
+        THINKING_NUM_CTX: int = Field(
+            default=8192,
+            description="Context window (num_ctx) used for the thinking/tool-calling model.",
+        )
+        FINAL_NUM_CTX: int = Field(
+            default=131072,
+            description="Context window (num_ctx) used for the final response model.",
+        )
         MAX_ROUNDS: int = Field(
             default=5,
             description="Max tool-call rounds the thinking model gets before we cut over to the final model.",
@@ -307,13 +314,13 @@ class Pipe:
             },
         }
 
-    async def _stream_ollama(self, client, model, messages, tools=None):
+    async def _stream_ollama(self, client, model, messages, tools=None, num_ctx=None):
         """Yields raw NDJSON chunk dicts from Ollama's streaming /api/chat."""
         payload = {
             "model": model,
             "messages": messages,
             "stream": True,
-            "options": {"num_ctx": self.valves.NUM_CTX},
+            "options": {"num_ctx": num_ctx},
         }
         if tools:
             payload["tools"] = tools
@@ -337,6 +344,7 @@ class Pipe:
         model,
         working_messages,
         tools=None,
+        num_ctx=None,
         suppress_content: bool = False,
         abort_on_bare_content: bool = False,
     ):
@@ -378,7 +386,9 @@ class Pipe:
         aborted = False
         stats = {}
 
-        gen = self._stream_ollama(client, model, working_messages, tools=tools)
+        gen = self._stream_ollama(
+            client, model, working_messages, tools=tools, num_ctx=num_ctx
+        )
         try:
             async for raw in gen:
                 piece = raw.get("message", {})
@@ -479,6 +489,7 @@ class Pipe:
                     self.valves.THINKING_MODEL,
                     thinking_messages,
                     tools=tool_specs if tool_specs else None,
+                    num_ctx=self.valves.THINKING_NUM_CTX,
                     suppress_content=True,
                     abort_on_bare_content=self.valves.ABORT_THINKING_ON_CONTENT,
                 ):
@@ -591,7 +602,10 @@ class Pipe:
             )
 
             async for piece in self._stream_and_forward(
-                client, self.valves.FINAL_MODEL, final_messages
+                client,
+                self.valves.FINAL_MODEL,
+                final_messages,
+                num_ctx=self.valves.FINAL_NUM_CTX,
             ):
                 yield piece
 
