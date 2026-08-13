@@ -1,10 +1,145 @@
 use_default_settings: true
 
-server:
-  secret_key: "searxng"
+search:
+  safe_search: 0
+  autocomplete: ""
+  formats:
+    - html
+    - json
 
-outgoing:
-  proxies:
-    all://:
-      - socks5h://tor:9050
-  using_tor_proxy: true
+engines:
+  # General web
+  - name: google
+    engine: google
+    shortcut: go
+    disabled: false
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+    disabled: false
+  - name: bing
+    engine: bing
+    shortcut: bi
+    disabled: false
+  - name: brave
+    engine: brave
+    shortcut: brv
+    disabled: false
+
+  # Independent / alternative indexes
+  - name: apk mirror
+    engine: apkmirror
+    shortcut: apk
+    disabled: false
+  - name: fdroid
+    engine: fdroid
+    shortcut: fd
+    disabled: false
+  - name: annas archive
+    engine: annas_archive
+    shortcut: aa
+    disabled: false
+  - name: piratebay
+    engine: piratebay
+    shortcut: tpb
+    disabled: false
+  - name: nyaa
+    engine: nyaa
+    shortcut: ny
+    disabled: false
+
+  # Reference / structured knowledge
+  - name: youtube
+    engine: youtube_noapi
+    shortcut: yt
+    disabled: false
+  - name: google scholar
+    engine: google_scholar
+    shortcut: gs
+    disabled: false
+  - name: reddit
+    engine: reddit
+    shortcut: re
+    disabled: false
+  - name: imdb
+    engine: imdb
+    shortcut: imd
+    disabled: false
+  - name: rottentomatoes
+    engine: rottentomatoes
+    shortcut: rt
+    disabled: false
+  - name: steam
+    engine: steam
+    shortcut: st
+    disabled: false
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    disabled: false
+
+  # Technical / dev-focused
+  - name: github
+    engine: github
+    shortcut: gh
+    disabled: false
+  - name: github code
+    engine: github_code
+    shortcut: ghc
+    disabled: false
+    ghc_auth:
+      type: "none"
+  - name: gitlab
+    engine: gitlab
+    shortcut: gl
+    disabled: false
+    base_url: https://gitlab.com
+  - name: stackoverflow
+    engine: stackexchange
+    shortcut: so
+    api_site: 'stackoverflow'
+    disabled: false
+  - name: huggingface
+    engine: huggingface
+    shortcut: hf
+    disabled: false
+
+  # World data
+  - name: duckduckgo weather
+    engine: duckduckgo_weather
+    shortcut: ddw
+    disabled: false
+  - name: apple maps
+    engine: apple_maps
+    shortcut: am
+    disabled: false
+  - name: openstreetmap
+    engine: openstreetmap
+    shortcut: osm
+    disabled: false
+
+  # Dark web
+  - name: ahmia
+    engine: ahmia
+    shortcut: ah
+    disabled: false
+    categories: onions
+    timeout: 60.0
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
+  - name: torch
+    engine: xpath
+    shortcut: trc
+    disabled: false
+    categories: onions
+    search_url: 'http://torch266367252.onion/search?q={query}'
+    url_xpath: '//div[@class="result"]/a/@href'
+    title_xpath: '//div[@class="result"]/a/text()'
+    content_xpath: '//div[@class="result"]/p[@class="snippet"]/text()'
+    timeout: 60.0
+    using_tor_proxy: true
+    proxies:
+      all://:
+        - socks5h://tor:9050
