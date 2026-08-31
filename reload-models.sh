@@ -2,16 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
 CONTAINER_NAME="ollama"
 PODMAN_ROOT="${SCRIPT_DIR}/containers-storage"
 PODMAN="podman --root ${PODMAN_ROOT}"
 
-echo "Checking for new models in ${SCRIPT_DIR}..."
-
+pushd ./models
 CURRENT_MODELS=$($PODMAN exec "$CONTAINER_NAME" ollama list | awk '{print $1}' | cut -d: -f1)
-
-for file in models/*.gguf; do
+for file in *.gguf; do
     # Handle case where no .gguf files exist
     [ -e "$file" ] || continue
 
@@ -28,5 +25,4 @@ for file in models/*.gguf; do
         $PODMAN exec "$CONTAINER_NAME" rm /root/models/tmp_modelfile
     fi
 done
-
-echo "Done! Refresh your WebUI to see the changes."
+popd
