@@ -268,6 +268,13 @@ def poll_host_once():
     threading.Thread(target=worker, daemon=True).start()
 
 def refresh_container_status():
+    # Do not launch another Podman query while a previous one is still running,
+    # and do not compete with a lifecycle operation for the same storage lock.
+    if compose_busy_flag.is_set():
+        return
+    if not status_poll_lock.acquire(blocking=False):
+        return
+
     def worker():
         result = {name: ("unknown", "not found") for name in SERVICES}
         try:
@@ -285,7 +292,7 @@ def refresh_container_status():
                 ],
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=5,
             )
             if proc.returncode != 0:
                 raise RuntimeError((proc.stderr or proc.stdout or "podman ps failed").strip())
@@ -297,10 +304,18 @@ def refresh_container_status():
                 cname, state, status_text = parts
                 if cname in result:
                     result[cname] = (state.lower(), status_text)
+        except subprocess.TimeoutExpired:
+            # A timed-out status check is not a service failure. Leave the
+            # existing UI state alone instead of painting every row red.
+            return
         except Exception as e:
             message = str(e)
             for name in SERVICES:
                 result[name] = ("error", message)
+            bus.container_status.emit(result)
+            return
+        finally:
+            status_poll_lock.release()
         bus.container_status.emit(result)
 
     threading.Thread(target=worker, daemon=True).start()
@@ -311,6 +326,7 @@ def refresh_container_status():
 # ---------------------------------------------------------------------------
 
 compose_busy_flag = threading.Event()
+status_poll_lock = threading.Lock()
 
 
 def _run_sequence(cmds):
@@ -667,6 +683,7 @@ class MainWindow(QMainWindow):
         buttons.append(self._service_button("Kill", f"Kill {name}", "#f85149", lambda _, n=name: self.on_service_action(n, "kill")))
         self.service_action_buttons[name] = buttons
         for btn in buttons:
+            btn.setEnabled(True)
             row.addWidget(btn)
 
         self.checkboxes[name] = toggle
