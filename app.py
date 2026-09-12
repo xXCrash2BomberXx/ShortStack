@@ -5,16 +5,17 @@ ShortStack -- native Linux desktop app.
 Run this in the same directory as your docker-compose.yaml (or set
 COMPOSE_DIR). Gives you:
 
-  - Start / Stop / Restart / Kill buttons for the whole podman-compose stack.
-  - An expandable row per service showing live logs and container status.
-    Expanding starts the underlying `podman-compose logs -f` process;
-    collapsing terminates it.
-  - A GPU panel that polls `nvidia-smi` once every 2 seconds while its
-    toggle is on, and renders the numbers into fixed labels/bars -- it
-    never runs a continuous streaming process and never accumulates text.
-    Turning the toggle off stops the polling outright.
-  - Container status is displayed inline beside each service and refreshed
-    from structured `podman ps` output.
+    - Start / Stop / Restart / Kill buttons for the whole podman-compose stack.
+    - An expandable row per service showing live logs, container status, and individual start/stop/restart/kill controls.
+      Expanding starts the underlying `podman-compose logs -f` process;
+      collapsing terminates it.
+    - A GPU panel that polls `nvidia-smi` once every 2 seconds while its
+      toggle is on, and renders the numbers into fixed labels/bars -- it
+      never runs a continuous streaming process and never accumulates text.
+      Turning the toggle off stops the polling outright.
+    - A host CPU and RAM panel that updates alongside the GPU monitor.
+    - Container status is displayed inline beside each service and refreshed
+      from structured `podman ps` output.
 
 Usage:
     pip install -r requirements.txt --break-system-packages
@@ -66,6 +67,7 @@ HAS_PODMAN = shutil.which("podman") is not None
 
 MAX_LOG_LINES = 400
 GPU_POLL_MS = 2000
+HOST_POLL_MS = 2000
 STATUS_POLL_MS = 4000
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
@@ -89,9 +91,15 @@ class Bus(QObject):
     container_status = Signal(dict)      # {service: (state, status_text)}
     gpu_stats = Signal(dict)             # parsed nvidia-smi fields
     gpu_error = Signal(str)
+    host_stats = Signal(dict)            # parsed host cpu/ram fields
+    host_error = Signal(str)
 
 
 bus = Bus()
+
+host_stats_lock = threading.Lock()
+last_cpu_sample = None  # (total, idle)
+
 
 # ---------------------------------------------------------------------------
 # Log watchers -- one `podman-compose logs -f <service>` process per toggle.
@@ -205,6 +213,60 @@ def poll_gpu_once():
 # a dumped `podman-compose ps` text block.
 # ---------------------------------------------------------------------------
 
+
+def poll_host_once():
+    def read_cpu_sample():
+        with open("/proc/stat", "r", encoding="utf-8") as fh:
+            fields = fh.readline().split()
+        if not fields or fields[0] != "cpu":
+            raise RuntimeError("unexpected /proc/stat format")
+        values = [float(v) for v in fields[1:]]
+        while len(values) < 7:
+            values.append(0.0)
+        total = sum(values[:7])
+        idle = values[3] + values[4]
+        return total, idle
+
+    def read_mem_sample():
+        meminfo = {}
+        with open("/proc/meminfo", "r", encoding="utf-8") as fh:
+            for line in fh:
+                key, rest = line.split(":", 1)
+                meminfo[key] = int(rest.strip().split()[0])
+        total_kib = meminfo["MemTotal"]
+        avail_kib = meminfo.get("MemAvailable", meminfo.get("MemFree", 0))
+        used_kib = max(total_kib - avail_kib, 0)
+        used_pct = (used_kib / total_kib * 100.0) if total_kib else 0.0
+        return used_kib / 1024.0, total_kib / 1024.0, used_pct
+
+    def worker():
+        global last_cpu_sample
+        try:
+            total, idle = read_cpu_sample()
+            with host_stats_lock:
+                previous = last_cpu_sample
+                last_cpu_sample = (total, idle)
+            if previous is None:
+                cpu_pct = 0.0
+            else:
+                prev_total, prev_idle = previous
+                total_delta = max(total - prev_total, 0.0)
+                idle_delta = max(idle - prev_idle, 0.0)
+                busy_delta = max(total_delta - idle_delta, 0.0)
+                cpu_pct = (busy_delta / total_delta * 100.0) if total_delta else 0.0
+
+            mem_used_mib, mem_total_mib, mem_pct = read_mem_sample()
+            bus.host_stats.emit({
+                "cpu_pct": cpu_pct,
+                "mem_used_mib": mem_used_mib,
+                "mem_total_mib": mem_total_mib,
+                "mem_pct": mem_pct,
+            })
+        except Exception as e:
+            bus.host_error.emit(str(e))
+
+    threading.Thread(target=worker, daemon=True).start()
+
 def refresh_container_status():
     def worker():
         result = {name: ("unknown", "not found") for name in SERVICES}
@@ -245,7 +307,7 @@ def refresh_container_status():
 
 
 # ---------------------------------------------------------------------------
-# Compose lifecycle (up / down / restart / kill)
+# Compose lifecycle (stack + per-service up / stop / restart / kill)
 # ---------------------------------------------------------------------------
 
 compose_busy_flag = threading.Event()
@@ -277,13 +339,19 @@ def _run_action(label, cmds):
     bus.compose_busy.emit(True, label)
 
     def worker():
-        result = _run_sequence(cmds)
+        _run_sequence(cmds)
         compose_busy_flag.clear()
         bus.compose_busy.emit(False, label)
         refresh_container_status()
 
     threading.Thread(target=worker, daemon=True).start()
     return True
+
+
+def _service_cmd(name, action):
+    if action == "up":
+        return BASE_CMD + ["up", "-d", name]
+    return BASE_CMD + [action, name]
 
 
 def action_start():
@@ -301,8 +369,16 @@ def action_kill():
     return _run_action("kill", [BASE_CMD + ["kill", "--all"]])
 
 
+def action_service(name, action):
+    if action in {"restart", "kill", "stop"}:
+        threading.Thread(target=stop_watcher, args=(name,), daemon=True).start()
+    return _run_action(f"{name} {action}", [_service_cmd(name, action)])
+
+
 # ---------------------------------------------------------------------------
 # UI
+# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 
 MONO = QFont("Monospace")
@@ -361,6 +437,7 @@ class MainWindow(QMainWindow):
         self.log_boxes = {}
         self.checkboxes = {}
         self.status_labels = {}
+        self.service_action_buttons = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -445,11 +522,39 @@ class MainWindow(QMainWindow):
         for lbl in (self.gpu_temp_label, self.gpu_power_label, self.gpu_mem_label):
             lbl.setStyleSheet("color:#c9d1d9; font-family:monospace; font-size:12px;")
         content_layout.addWidget(self.gpu_panel)
+
+        # --- Host monitor: CPU and RAM alongside GPU ---
+        content_layout.addWidget(
+            self._section_label(
+                "Host monitor",
+                "Shows host CPU and RAM utilization alongside the GPU. CPU and RAM refresh on the same 2s tick.",
+            )
+        )
+        host_grid = QGridLayout()
+        host_grid.setContentsMargins(0, 6, 0, 6)
+
+        self.host_cpu_bar = styled_bar()
+        self.host_ram_bar = styled_bar()
+        self.host_cpu_label = QLabel("-- %")
+        self.host_ram_label = QLabel("-- / -- MiB")
+
+        host_grid.addWidget(QLabel("CPU utilization"), 0, 0)
+        host_grid.addWidget(self.host_cpu_bar, 0, 1)
+        host_grid.addWidget(self.host_cpu_label, 0, 2)
+        host_grid.addWidget(QLabel("Memory"), 1, 0)
+        host_grid.addWidget(self.host_ram_bar, 1, 1)
+        host_grid.addWidget(self.host_ram_label, 1, 2)
+        for lbl in (self.host_cpu_label, self.host_ram_label):
+            lbl.setStyleSheet("color:#c9d1d9; font-family:monospace; font-size:12px;")
+        content_layout.addLayout(host_grid)
         content_layout.addWidget(hline())
 
         # --- Services + expandable logs/status ---
         content_layout.addWidget(
-            self._section_label("Services", "Click a service to expand its live logs. Expanding starts the log watcher; collapsing stops it.")
+            self._section_label(
+                "Services",
+                "Click a service to expand its live logs. Each row now has its own start/stop/restart/kill controls.",
+            )
         )
         for svc in SERVICES:
             row, log_box = self._watcher_row(svc, svc)
@@ -479,17 +584,24 @@ class MainWindow(QMainWindow):
         bus.container_status.connect(self.on_container_status)
         bus.gpu_stats.connect(self.on_gpu_stats)
         bus.gpu_error.connect(self.on_gpu_error)
+        bus.host_stats.connect(self.on_host_stats)
+        bus.host_error.connect(self.on_host_error)
 
         # --- GPU polling timer: only runs while the toggle is on ---
         self.gpu_timer = QTimer(self)
         self.gpu_timer.timeout.connect(poll_gpu_once)
+
+        # --- Host polling timer: always-on CPU/RAM sampling ---
+        self.host_timer = QTimer(self)
+        self.host_timer.timeout.connect(poll_host_once)
+        self.host_timer.start(HOST_POLL_MS)
+        poll_host_once()
 
         # --- Periodic container status refresh ---
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(refresh_container_status)
         self.status_timer.start(STATUS_POLL_MS)
         refresh_container_status()
-
     # -- UI builder helpers --
 
     def _section_label(self, title, hint):
@@ -505,6 +617,24 @@ class MainWindow(QMainWindow):
             h.setWordWrap(True)
             layout.addWidget(h)
         return wrap
+
+    def _service_button(self, text, tooltip, color, callback):
+        btn = QToolButton()
+        btn.setText(text)
+        btn.setAutoRaise(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn.setFont(MONO)
+        btn.setStyleSheet(
+            "QToolButton {"
+            f"border:1px solid {color}; padding:2px 8px; border-radius:6px; color:{color}; background:transparent; font-size:10px;"
+            "}"
+            f"QToolButton:hover {{ background:{color}; color:#0d1117; }}"
+            "QToolButton:disabled { color:#586069; border-color:#30363d; background:transparent; }"
+        )
+        btn.setToolTip(tooltip)
+        btn.clicked.connect(callback)
+        return btn
 
     def _watcher_row(self, name, label_text):
         row = QHBoxLayout()
@@ -529,6 +659,15 @@ class MainWindow(QMainWindow):
         status.setFont(MONO)
         row.addWidget(status)
         row.addStretch()
+
+        buttons = []
+        buttons.append(self._service_button("Up", f"Start {name}", "#3fb950", lambda _, n=name: self.on_service_action(n, "up")))
+        buttons.append(self._service_button("Stop", f"Stop {name}", "#8b96a5", lambda _, n=name: self.on_service_action(n, "stop")))
+        buttons.append(self._service_button("Restart", f"Restart {name}", "#d29922", lambda _, n=name: self.on_service_action(n, "restart")))
+        buttons.append(self._service_button("Kill", f"Kill {name}", "#f85149", lambda _, n=name: self.on_service_action(n, "kill")))
+        self.service_action_buttons[name] = buttons
+        for btn in buttons:
+            row.addWidget(btn)
 
         self.checkboxes[name] = toggle
         self.status_labels[name] = status
@@ -564,6 +703,21 @@ class MainWindow(QMainWindow):
             "Kill the whole stack now? This force-stops all containers immediately.",
         ) == QMessageBox.Yes:
             action_kill()
+
+    def on_service_action(self, name, action):
+        if action == "restart" and QMessageBox.question(
+            self,
+            f"Restart {name}",
+            f"Restart {name}? This stops and starts only that service.",
+        ) != QMessageBox.Yes:
+            return
+        if action == "kill" and QMessageBox.question(
+            self,
+            f"Kill {name}",
+            f"Kill {name}? This force-stops only that service.",
+        ) != QMessageBox.Yes:
+            return
+        action_service(name, action)
 
     def on_toggle(self, name, checked):
         if checked:
@@ -627,6 +781,9 @@ class MainWindow(QMainWindow):
     def on_compose_busy(self, busy, label):
         for b in (self.btn_up, self.btn_down, self.btn_restart, self.btn_kill):
             b.setEnabled(not busy)
+        for buttons in self.service_action_buttons.values():
+            for b in buttons:
+                b.setEnabled(not busy)
         if busy:
             self.compose_output.clear()
 
@@ -655,11 +812,23 @@ class MainWindow(QMainWindow):
         self.gpu_temp_label.setText("error")
         self.gpu_power_label.setText(message[:60])
 
+    def on_host_stats(self, stats):
+        self.host_cpu_bar.setValue(int(stats["cpu_pct"]))
+        self.host_cpu_bar.setFormat(f"{stats['cpu_pct']:.0f}%")
+        self.host_ram_bar.setValue(int(stats["mem_pct"]))
+        self.host_ram_bar.setFormat(f"{stats['mem_pct']:.0f}%")
+        self.host_cpu_label.setText(f"{stats['cpu_pct']:.0f}%")
+        self.host_ram_label.setText(f"{stats['mem_used_mib']:.0f} / {stats['mem_total_mib']:.0f} MiB")
+
+    def on_host_error(self, message):
+        self.host_cpu_label.setText("error")
+        self.host_ram_label.setText(message[:60])
+
     def closeEvent(self, event):
         stop_all_watchers()
         self.gpu_timer.stop()
+        self.host_timer.stop()
         super().closeEvent(event)
-
 
 def main():
     app = QApplication(sys.argv)
