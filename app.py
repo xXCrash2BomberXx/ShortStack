@@ -22,12 +22,16 @@ Usage:
     python3 app.py
 """
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
 import threading
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
@@ -69,6 +73,10 @@ MAX_LOG_LINES = 400
 GPU_POLL_MS = 2000
 HOST_POLL_MS = 2000
 STATUS_POLL_MS = 4000
+MODELS_POLL_MS = 5000
+
+# Matches the port tailscale publishes for ollama in docker-compose.yaml.
+OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://localhost:11434")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
@@ -93,6 +101,8 @@ class Bus(QObject):
     gpu_error = Signal(str)
     host_stats = Signal(dict)            # parsed host cpu/ram fields
     host_error = Signal(str)
+    models_stats = Signal(list)          # list of loaded-model dicts
+    models_error = Signal(str)
 
 
 bus = Bus()
@@ -204,6 +214,95 @@ def poll_gpu_once():
             )
         except Exception as e:
             bus.gpu_error.emit(str(e))
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Loaded models -- queries the Ollama API directly (not the `ollama` CLI) so
+# this works even if `ollama` isn't on the host PATH, only the container
+# port. /api/ps already reports the *live* context_length (what `ollama ps`
+# shows under CONTEXT) plus total/VRAM size on recent Ollama versions, so
+# that's the primary source. /api/show is only used as a fallback for older
+# Ollama builds that don't include context_length on /api/ps yet -- and in
+# that case it returns the model's max supported context, not what's
+# actually loaded, so it's flagged as such in the UI.
+# ---------------------------------------------------------------------------
+
+
+def _ollama_api(path, payload=None, timeout=5):
+    url = f"{OLLAMA_API_BASE}{path}"
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _format_expiry(expires_at):
+    if not expires_at:
+        return "--"
+    try:
+        # Ollama returns RFC3339 with nanosecond precision; trim to microseconds.
+        cleaned = re.sub(r"(\.\d{6})\d*", r"\1", expires_at)
+        dt = datetime.fromisoformat(cleaned)
+        delta = dt - datetime.now(dt.tzinfo or timezone.utc)
+        secs = int(delta.total_seconds())
+        if secs <= 0:
+            return "unloading"
+        mins, secs = divmod(secs, 60)
+        return f"{mins}m {secs}s" if mins else f"{secs}s"
+    except Exception:
+        return expires_at
+
+
+def poll_models_once():
+    def worker():
+        try:
+            ps = _ollama_api("/api/ps")
+        except urllib.error.URLError as e:
+            bus.models_error.emit(f"can't reach ollama at {OLLAMA_API_BASE}: {e}")
+            return
+        except Exception as e:
+            bus.models_error.emit(str(e))
+            return
+
+        entries = []
+        for m in ps.get("models", []):
+            name = m.get("name") or m.get("model") or "unknown"
+            details = m.get("details", {}) or {}
+
+            # Match what `ollama ps` calls SIZE: total resident size, with
+            # size_vram telling us what fraction of that sits on the GPU.
+            size_total = m.get("size") or 0
+            size_vram = m.get("size_vram") or 0
+            gpu_pct = (size_vram / size_total * 100.0) if size_total else 0.0
+
+            ctx = m.get("context_length")  # live/session value, when available
+            ctx_is_max = False
+            if not ctx:
+                try:
+                    show = _ollama_api("/api/show", {"name": name})
+                    model_info = show.get("model_info", {}) or {}
+                    ctx_key = next((k for k in model_info if k.endswith(".context_length")), None)
+                    if ctx_key:
+                        ctx = model_info[ctx_key]
+                        ctx_is_max = True
+                except Exception:
+                    pass  # leave ctx as None if /api/show also fails
+
+            entries.append({
+                "name": name,
+                "family": details.get("family", "--"),
+                "parameter_size": details.get("parameter_size", "--"),
+                "quantization": details.get("quantization_level", "--"),
+                "size_gib": size_total / (1024 ** 3),
+                "gpu_pct": gpu_pct,
+                "expires_in": _format_expiry(m.get("expires_at")),
+                "context_length": f"{ctx:,}" if ctx else "--",
+                "context_is_max": ctx_is_max,
+            })
+
+        bus.models_stats.emit(entries)
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -565,6 +664,25 @@ class MainWindow(QMainWindow):
         content_layout.addLayout(host_grid)
         content_layout.addWidget(hline())
 
+        # --- Loaded models: what's currently resident in ollama, with context ---
+        content_layout.addWidget(
+            self._section_label(
+                "Loaded models",
+                f"Polls {OLLAMA_API_BASE}/api/ps every {MODELS_POLL_MS // 1000}s -- same numbers as `ollama ps` "
+                "(total size incl. CPU+GPU split, and the live context in use). If your Ollama build doesn't "
+                "report live context yet, it falls back to the model's max and is labeled accordingly.",
+            )
+        )
+        self.models_panel = QWidget()
+        self.models_layout = QVBoxLayout(self.models_panel)
+        self.models_layout.setContentsMargins(0, 6, 0, 6)
+        self.models_layout.setSpacing(2)
+        self.models_empty_label = QLabel("querying…")
+        self.models_empty_label.setStyleSheet("color:#8b96a5; font-size:11px;")
+        self.models_layout.addWidget(self.models_empty_label)
+        content_layout.addWidget(self.models_panel)
+        content_layout.addWidget(hline())
+
         # --- Services + expandable logs/status ---
         content_layout.addWidget(
             self._section_label(
@@ -602,6 +720,8 @@ class MainWindow(QMainWindow):
         bus.gpu_error.connect(self.on_gpu_error)
         bus.host_stats.connect(self.on_host_stats)
         bus.host_error.connect(self.on_host_error)
+        bus.models_stats.connect(self.on_models_stats)
+        bus.models_error.connect(self.on_models_error)
 
         # --- GPU polling timer: only runs while the toggle is on ---
         self.gpu_timer = QTimer(self)
@@ -618,6 +738,12 @@ class MainWindow(QMainWindow):
         self.status_timer.timeout.connect(refresh_container_status)
         self.status_timer.start(STATUS_POLL_MS)
         refresh_container_status()
+
+        # --- Periodic loaded-models refresh ---
+        self.models_timer = QTimer(self)
+        self.models_timer.timeout.connect(poll_models_once)
+        self.models_timer.start(MODELS_POLL_MS)
+        poll_models_once()
     # -- UI builder helpers --
 
     def _section_label(self, title, hint):
@@ -633,6 +759,38 @@ class MainWindow(QMainWindow):
             h.setWordWrap(True)
             layout.addWidget(h)
         return wrap
+
+    def _model_row(self, entry):
+        row = QWidget()
+        grid = QGridLayout(row)
+        grid.setContentsMargins(0, 3, 0, 3)
+        grid.setHorizontalSpacing(14)
+
+        name = QLabel(entry["name"])
+        name.setStyleSheet("color:#e6edf3; font-weight:600; font-family:monospace; font-size:11px;")
+        grid.addWidget(name, 0, 0)
+
+        details = QLabel(f"{entry['family']} · {entry['parameter_size']} · {entry['quantization']}")
+        details.setStyleSheet("color:#8b96a5; font-size:11px;")
+        grid.addWidget(details, 0, 1)
+
+        ctx_text = f"ctx {entry['context_length']}"
+        if entry.get("context_is_max"):
+            ctx_text += " (max, not live)"
+        ctx = QLabel(ctx_text)
+        ctx.setStyleSheet("color:#58a6ff; font-family:monospace; font-size:11px;")
+        grid.addWidget(ctx, 0, 2)
+
+        vram = QLabel(f"{entry['size_gib']:.1f} GiB · {entry['gpu_pct']:.0f}% GPU")
+        vram.setStyleSheet("color:#c9d1d9; font-family:monospace; font-size:11px;")
+        grid.addWidget(vram, 0, 3)
+
+        expiry = QLabel(f"unloads in {entry['expires_in']}")
+        expiry.setStyleSheet("color:#8b96a5; font-family:monospace; font-size:11px;")
+        grid.addWidget(expiry, 0, 4)
+
+        grid.setColumnStretch(5, 1)
+        return row
 
     def _service_button(self, text, tooltip, color, callback):
         btn = QToolButton()
@@ -841,10 +999,35 @@ class MainWindow(QMainWindow):
         self.host_cpu_label.setText("error")
         self.host_ram_label.setText(message[:60])
 
+    def _clear_models_layout(self):
+        while self.models_layout.count():
+            item = self.models_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.deleteLater()
+
+    def on_models_stats(self, entries):
+        self._clear_models_layout()
+        if not entries:
+            empty = QLabel("no models currently loaded")
+            empty.setStyleSheet("color:#8b96a5; font-size:11px;")
+            self.models_layout.addWidget(empty)
+            return
+        for entry in entries:
+            self.models_layout.addWidget(self._model_row(entry))
+
+    def on_models_error(self, message):
+        self._clear_models_layout()
+        err = QLabel(message[:120])
+        err.setStyleSheet("color:#f85149; font-size:11px;")
+        err.setWordWrap(True)
+        self.models_layout.addWidget(err)
+
     def closeEvent(self, event):
         stop_all_watchers()
         self.gpu_timer.stop()
         self.host_timer.stop()
+        self.models_timer.stop()
         super().closeEvent(event)
 
 def main():
